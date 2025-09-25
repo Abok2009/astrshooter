@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="kk">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Astro Shooter — 2D HTML Game</title>
+<style>
+  :root{--bg:#041022;--ship:#6fffb0;--enemy:#ff6b6b;--bullet:#00f6ff}
+  html,body{height:100%;margin:0;font-family:Inter,system-ui,Arial;background:linear-gradient(180deg,var(--bg),#000a12);color:#fff}
+  .wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;padding:18px;box-sizing:border-box}
+  canvas{width:min(900px,95vw);height:70vh;border-radius:12px;box-shadow:0 12px 30px rgba(0,0,0,0.6);background:#001021}
+  .hud{width:min(900px,95vw);display:flex;justify-content:space-between;margin-top:12px}
+  .panel{background:rgba(255,255,255,0.02);padding:8px 12px;border-radius:8px}
+  button{background:transparent;border:1px solid rgba(255,255,255,0.06);color:#fff;padding:6px 10px;border-radius:8px;cursor:pointer}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game"></canvas>
+    <div class="hud">
+      <div class="panel">Score: <span id="score">0</span> &nbsp; High: <span id="high">0</span></div>
+      <div class="panel"><button id="btnRestart">Restart</button> &nbsp; <button id="btnPause">Pause</button></div>
+    </div>
+  </div>
+<script>
+const canvas = document.getElementById('game'); const ctx = canvas.getContext('2d');
+let W,H,ratio; function resize(){ ratio = window.devicePixelRatio || 1; const cssW = Math.min(900, window.innerWidth * 0.95); const cssH = Math.floor(window.innerHeight * 0.72); canvas.width = Math.floor(cssW * ratio); canvas.height = Math.floor(cssH * ratio); canvas.style.width = cssW+'px'; canvas.style.height = cssH+'px'; W = canvas.width; H = canvas.height; }
+window.addEventListener('resize', resize); resize();
+
+const scoreEl = document.getElementById('score'); const highEl = document.getElementById('high'); const btnRestart = document.getElementById('btnRestart'); const btnPause = document.getElementById('btnPause');
+let high = parseInt(localStorage.getItem('astro_high')||'0',10); highEl.textContent = high;
+let running = true; let paused = false; btnPause.addEventListener('click', ()=>{ paused = !paused; btnPause.textContent = paused? 'Resume' : 'Pause'; }); btnRestart.addEventListener('click', initGame);
+
+// Player ship
+const ship = { x:0, y:0, w:46*ratio, h:34*ratio, vx:0, vy:0, speed:360 };
+let bullets = []; let enemies = []; let particles = []; let score = 0; let spawnTimer=0; let fireTimer=0;
+
+function initGame(){ bullets=[]; enemies=[]; particles=[]; score=0; spawnTimer=0; fireTimer=0; ship.x = W/2 - ship.w/2; ship.y = H - ship.h - 40*ratio; ship.vx=0; ship.vy=0; running=true; paused=false; btnPause.textContent='Pause'; scoreEl.textContent = 0; }
+initGame();
+
+// Input
+const keys={}; window.addEventListener('keydown', e=>{ keys[e.code]=true; if(e.code==='Space') e.preventDefault(); }); window.addEventListener('keyup', e=>{ keys[e.code]=false; });
+canvas.setAttribute('tabindex','0'); canvas.focus();
+
+// Touch: tap to shoot, drag to move
+let dragging=false; canvas.addEventListener('pointerdown', (e)=>{ dragging=true; const rect=canvas.getBoundingClientRect(); const x=(e.clientX-rect.left)*ratio; ship.x = x - ship.w/2; shoot(); }); window.addEventListener('pointermove', (e)=>{ if(!dragging) return; const rect=canvas.getBoundingClientRect(); const x=(e.clientX-rect.left)*ratio; ship.x = Math.min(Math.max(6*ratio, x - ship.w/2), W-ship.w-6*ratio); }); window.addEventListener('pointerup', ()=>{ dragging=false; });
+
+// Sound blip using oscillator
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)(); function blip(freq,t=0.05){ const o=audioCtx.createOscillator(); const g=audioCtx.createGain(); o.type='sine'; o.frequency.value=freq; g.gain.value=0.0001; o.connect(g); g.connect(audioCtx.destination); o.start(); g.gain.exponentialRampToValueAtTime(0.12, audioCtx.currentTime+0.01); g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime+t); o.stop(audioCtx.currentTime+t+0.02); }
+window.addEventListener('pointerdown', ()=>{ if(audioCtx.state==='suspended') audioCtx.resume(); });
+
+// Helpers
+function rand(a,b){ return a + Math.random()*(b-a); }
+
+// Game loop
+let last = performance.now(); function loop(now){ const dt = Math.min(0.04, (now-last)/1000); last=now; if(!paused && running) update(dt); draw(); requestAnimationFrame(loop); } requestAnimationFrame(loop);
+
+function update(dt){ // movement
+  if(keys['ArrowLeft'] || keys['KeyA']) ship.x -= ship.speed*dt; if(keys['ArrowRight'] || keys['KeyD']) ship.x += ship.speed*dt; ship.x = Math.max(6*ratio, Math.min(W-ship.w-6*ratio, ship.x));
+  // shooting
+  fireTimer -= dt; if((keys['Space'] || keys['KeyZ']) && fireTimer <= 0){ shoot(); fireTimer = 0.18; }
+  // bullets
+  for(let i=bullets.length-1;i>=0;i--){ const b=bullets[i]; b.y -= b.speed*dt; if(b.y < -20) bullets.splice(i,1); }
+  // spawn enemies
+  spawnTimer -= dt; if(spawnTimer <= 0){ spawnEnemy(); spawnTimer = rand(0.6,1.4); }
+  // enemies update
+  for(let i=enemies.length-1;i>=0;i--){ const e=enemies[i]; e.y += e.vy*dt; e.x += Math.sin((e.y+e.seed)*0.004)*40*ratio*dt; if(e.y > H + 60){ enemies.splice(i,1); continue; }
+    // collision with bullets
+    for(let j=bullets.length-1;j>=0;j--){ const b=bullets[j]; if(boxCollide(b, e)){ bullets.splice(j,1); enemies.splice(i,1); explode(e.x+e.w/2, e.y+e.h/2); score += 10; scoreEl.textContent = score; blip(900,0.04); if(score > high){ high = score; localStorage.setItem('astro_high', high); highEl.textContent = high; } break; } }
+    // collision with ship
+    if(boxCollide(e, ship)){ running=false; blip(160,0.2); // game over
+      setTimeout(()=>{ initGame(); }, 800); }
+  }
+  // particles
+  for(let i=particles.length-1;i>=0;i--){ const p=particles[i]; p.vy += 900*dt; p.x += p.vx*dt; p.y += p.vy*dt; p.life -= dt; if(p.life <= 0) particles.splice(i,1); }
+}
+
+function shoot(){ bullets.push({x: ship.x + ship.w/2 - 4*ratio, y: ship.y - 8*ratio, w:8*ratio, h:16*ratio, speed: 800 }); blip(1200,0.02); }
+function spawnEnemy(){ const w = 44*ratio; const h = 34*ratio; const x = rand(20, W - w - 20); const y = -h - 20; enemies.push({x,y,w,h,vy: rand(80,180), seed: Math.random()*9999}); }
+function explode(x,y){ for(let i=0;i<14;i++){ particles.push({x, y, vx: rand(-360,360), vy: rand(-720,-160), life: rand(0.4,1.1), size: rand(2,6) }); } }
+function boxCollide(a,b){ return a.x < b.x + b.w && a.x + (a.w||0) > b.x && a.y < b.y + b.h && a.y + (a.h||0) > b.y; }
+
+// Drawing
+function draw(){ ctx.clearRect(0,0,W,H); // background stars
+  ctx.fillStyle='#00101a'; ctx.fillRect(0,0,W,H);
+  for(let i=0;i<80;i++){ const x = (i*937) % W; const y = (i*613) % H; ctx.globalAlpha = 0.07; ctx.fillRect(x, y, 1, 1); } ctx.globalAlpha = 1;
+  // enemies
+  enemies.forEach(e=>{ ctx.fillStyle='rgba(255,107,107,0.95)'; roundRect(ctx, e.x, e.y, e.w, e.h, 6*ratio); ctx.fill(); ctx.fillStyle='rgba(0,0,0,0.12)'; ctx.fillRect(e.x+6*ratio, e.y+e.h/2, e.w-12*ratio, 6*ratio); });
+  // bullets
+  bullets.forEach(b=>{ ctx.fillStyle= '--'; ctx.fillStyle = '#00f6ff'; ctx.fillRect(b.x, b.y, b.w, b.h); });
+  // ship
+  ctx.fillStyle = '#6fffb0'; roundRect(ctx, ship.x, ship.y, ship.w, ship.h, 8*ratio); ctx.fill(); ctx.fillStyle='rgba(0,0,0,0.08)'; ctx.fillRect(ship.x+8*ratio, ship.y+ship.h/2, ship.w-16*ratio, 6*ratio);
+  // particles
+  particles.forEach(p=>{ ctx.globalAlpha = Math.max(0, p.life); ctx.fillStyle = '#ffd166'; ctx.fillRect(p.x, p.y, (p.size||4)*ratio, (p.size||4)*ratio); ctx.globalAlpha = 1; });
+  // HUD (drawn by HTML elements) - optional overlay when paused
+  if(!running){ ctx.fillStyle='rgba(0,0,0,0.4)'; ctx.fillRect(0,0,W,H); ctx.fillStyle='#fff'; ctx.font = `${36*ratio}px Inter`; ctx.textAlign='center'; ctx.fillText('Destroyed — Restarting...', W/2, H/2); }
+}
+function roundRect(ctx,x,y,w,h,r){ if(w<2*r) r=w/2; if(h<2*r) r=h/2; ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+</script>
+</body>
+</html>
